@@ -53,11 +53,12 @@ $("#login form").submit(function (e) {
     username: $("#login input").val().trim(),
   };
   if (user.username.length > 0) {
-    // Si le champ de connexion n'est pas vide
     socket.emit("user-login", user, function (success) {
       if (success) {
-        $("body").removeAttr("id"); // Cache formulaire de connexion
-        $("#chat input").focus(); // Focus sur le champ du message
+        $("body").removeAttr("id");
+        $("#chat input").focus();
+        // Ajouter l'utilisateur local directement
+        users.push(user);
       }
     });
   }
@@ -101,7 +102,13 @@ socket.on("service-message", function (message) {
  * Connexion d'un nouvel utilisateur
  */
 socket.on("user-login", function (user) {
-  users.push(user);
+  // Ne pas ajouter si c'est notre propre connexion
+  if (user.username !== $("#login input").val().trim()) {
+    const existingUser = users.find((u) => u.username === user.username);
+    if (!existingUser) {
+      users.push(user);
+    }
+  }
   setTimeout(function () {
     $("#users li.new").removeClass("new");
   }, 1000);
