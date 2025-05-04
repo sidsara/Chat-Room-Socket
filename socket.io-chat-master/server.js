@@ -1,131 +1,120 @@
+// Importation des modules nécessaires
 const express = require("express");
 const app = express();
-const http = require("http").Server(app);
-const io = require("socket.io")(http);
-const fileUpload = require("express-fileupload");
+const http = require("http").Server(app); // Création du serveur HTTP
+const io = require("socket.io")(http); // Intégration de Socket.IO au serveur HTTP
+const fileUpload = require("express-fileupload"); // Middleware pour gérer les fichiers uploadés
 
-// Configuration
-const PORT = process.env.PORT || 3000;
-const MAX_MESSAGES_HISTORY = 50;
+// Configuration des constantes
+const PORT = process.env.PORT || 3000; // Port du serveur
+const MAX_MESSAGES_HISTORY = 50; // Nombre maximum de messages conservés en mémoire
 
-// Middleware
+// Middleware pour servir les fichiers statiques (HTML, CSS, JS) depuis le dossier "public"
 app.use(express.static(__dirname + "/public"));
-app.use(
-  fileUpload({
-    limits: { fileSize: 5 * 1024 * 1024 }, // limite 5MB
-    safeFileNames: true,
-  })
-);
 
-// État de l'application
-const users = [];
-const messages = [];
-const typingUsers = [];
+// État de l'application en mémoire
+const users = []; // Liste des utilisateurs connectés
+const messages = []; // Historique des messages
+const typingUsers = []; // Liste des utilisateurs qui sont en train d’écrire
 
-// Gestion des connexions Socket.IO
+//Quand un client se connecte, cette callback est exécutée.
 io.on("connection", (socket) => {
-  let loggedUser;
+  let loggedUser; // Stocke l'utilisateur connecté à ce socket
 
-  // Login utilisateur
+  // Événement de connexion d'un utilisateur
   socket.on("user-login", (user, callback) => {
-    // Vérification du nom d'utilisateur
+    // Vérifie si le nom d'utilisateur est déjà pris
     if (users.some((u) => u.username === user.username)) {
-      callback(false);
+      callback(false); // Refuse la connexion
       return;
     }
 
-    // Ajout de l'utilisateur
+    // Accepte l'utilisateur et l’ajoute à la liste
     loggedUser = user;
     users.push(loggedUser);
 
-    // Envoi de l'historique des messages
+    // Envoie l’historique des messages à l’utilisateur connecté
     messages.forEach((message) => {
       socket.emit("chat-message", message);
     });
 
-    // Notification de connexion
+    // Notifie tous les autres utilisateurs de la nouvelle connexion
     io.emit("user-login", loggedUser);
     io.emit("service-message", {
       text: `${loggedUser.username} a rejoint le chat`,
       type: "login",
     });
 
-    // Envoi de la liste des utilisateurs
+    // Envoie la liste des utilisateurs déjà connectés au nouvel utilisateur
     users.forEach((user) => {
       socket.emit("user-login", user);
     });
 
-    callback(true);
+    callback(true); // Connexion acceptée
   });
 
-  // Messages
+  // Événement lorsqu'un utilisateur envoie un message
   socket.on("chat-message", (message) => {
     if (!loggedUser) return;
 
+    // Ajoute des métadonnées au message
     message.username = loggedUser.username;
     message.timestamp = new Date().toISOString();
 
-    // Gestion des types de messages
-    switch (message.type) {
-      case "private":
-        handlePrivateMessage(socket, message);
-        break;
-      case "image":
-        handleImageMessage(socket, message);
-        break;
-      default:
-        handlePublicMessage(socket, message);
-    }
+    handlePublicMessage(socket, message);
 
-    // Limitation de l'historique
+    // Supprime les anciens messages si la limite est dépassée
     if (messages.length > MAX_MESSAGES_HISTORY) {
       messages.shift();
     }
   });
 
-  // Gestion de la frappe
+  // Événement déclenché lorsque l'utilisateur commence à écrire
   socket.on("start-typing", () => {
     if (!loggedUser) return;
 
     const typingUser = typingUsers.find(
       (u) => u.username === loggedUser.username
     );
+
     if (!typingUser) {
       typingUsers.push(loggedUser);
-      io.emit("update-typing", typingUsers);
+      io.emit("update-typing", typingUsers); // Notifie les autres
     }
   });
 
+  // Événement déclenché lorsque l'utilisateur arrête d’écrire
   socket.on("stop-typing", () => {
     if (!loggedUser) return;
 
     const index = typingUsers.findIndex(
       (u) => u.username === loggedUser.username
     );
+
     if (index !== -1) {
       typingUsers.splice(index, 1);
-      io.emit("update-typing", typingUsers);
+      io.emit("update-typing", typingUsers); // Met à jour la liste
     }
   });
 
-  // Déconnexion
+  // Événement déclenché lors de la déconnexion d’un utilisateur
   socket.on("disconnect", () => {
     if (!loggedUser) return;
 
-    // Retrait de l'utilisateur
+    // Supprime l'utilisateur de la liste
     const index = users.findIndex((u) => u.username === loggedUser.username);
     if (index !== -1) {
       users.splice(index, 1);
     }
 
-    // Notification de déconnexion
+    // Notifie les autres utilisateurs
     io.emit("user-logout", loggedUser);
     io.emit("service-message", {
       text: `${loggedUser.username} a quitté le chat`,
       type: "logout",
     });
 
-    // Retrait des indicateurs de frappe
+    // Supprime l’utilisateur de la liste des "typing"
     const typingIndex = typingUsers.findIndex(
       (u) => u.username === loggedUser.username
     );
@@ -136,35 +125,18 @@ io.on("connection", (socket) => {
   });
 });
 
-// Fonctions utilitaires
+// Fonction pour gérer les messages publics
 function handlePublicMessage(socket, message) {
   messages.push(message);
   io.emit("chat-message", message);
 }
 
-function handlePrivateMessage(socket, message) {
-  const recipientName = message.text.split(" ")[0].substring(1);
-  const recipient = users.find((u) => u.username === recipientName);
-
-  if (recipient) {
-    message.isPrivate = true;
-    messages.push(message);
-    socket.emit("chat-message", message);
-    socket.to(recipient.socketId).emit("chat-message", message);
-  }
-}
-
-function handleImageMessage(socket, message) {
-  messages.push(message);
-  io.emit("chat-message", message);
-}
-
-// Démarrage du serveur
+// Démarrage du serveur HTTP
 http.listen(PORT, () => {
   console.log(`Server is listening on port ${PORT}`);
 });
 
-// Gestion des erreurs
+// Gestion des erreurs non interceptées
 process.on("uncaughtException", (err) => {
   console.error("Uncaught Exception:", err);
 });
